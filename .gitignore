@@ -1,0 +1,24 @@
+# Build do .NET
+bin/
+obj/
+
+# Visual Studio
+.vs/
+
+# Arquivos de usuário/configuração local
+*.user
+*.suo
+
+# Logs
+*.log
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# Configurações locais
+appsettings.Development.json
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
