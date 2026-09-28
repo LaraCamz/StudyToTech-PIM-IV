@@ -1,0 +1,24 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: studytotech-mysql
+    restart: unless-stopped
+
+    
+    command: --log-bin-trust-function-creators=1
+
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mydb
+      MYSQL_USER: studytotech
+      MYSQL_PASSWORD: studytotech
+
+    ports:
+      - "3307:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/scriptdb.sql:/docker-entrypoint-initdb.d/scriptdb.sql:ro
+
+volumes:
+  mysql_data:

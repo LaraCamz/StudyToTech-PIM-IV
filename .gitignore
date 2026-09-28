@@ -4,21 +4,34 @@ obj/
 
 # Visual Studio
 .vs/
-
-# Arquivos de usuário/configuração local
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 *.user
 *.suo
+*.userosscache
+*.sln.docstates
+
+# configuração local
+appsettings.Local.json
+appsettings.*.Local.json
+
 
 # Logs
 *.log
+logs/
 
 # Arquivos temporários
 *.tmp
 *.temp
 
 # Configurações locais
-appsettings.Development.json
+#appsettings.Development.json
 
 # Sistema operacional
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# Docker
+mysql_data/
