@@ -125,9 +125,16 @@ CREATE TABLE `pedido` (
     `data_criacao` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `data_finalizacao` DATETIME NULL,
 
+    -- RN04: evita 2 pedidos em elaboração do mesmo cliente.
+    `cliente_em_elaboracao` INT
+        GENERATED ALWAYS AS (
+            CASE WHEN `status_idstatus_pedido` = 1 THEN `usuario_idusuario` END
+        ) STORED,
+
     PRIMARY KEY (`idpedido`),
     INDEX `idx_pedido_usuario` (`usuario_idusuario`),
     INDEX `idx_pedido_status` (`status_idstatus_pedido`),
+    UNIQUE KEY `uk_pedido_cliente_em_elaboracao` (`cliente_em_elaboracao`),
 
     CONSTRAINT `fk_pedido_usuario`
         FOREIGN KEY (`usuario_idusuario`)
@@ -230,8 +237,7 @@ INSERT INTO `categoria` (`nome`) VALUES
 ('Tablets'),
 ('Acessórios');
 
--- A ordem abaixo define os IDs usados nas triggers e na
--- procedure de finalização (1 = Em elaboração, 2 = Finalizado).
+-- Ordem define os IDs usados no código (1=Em elaboração, 2=Finalizado).
 INSERT INTO `status_pedido` (`nome`) VALUES
 ('Em elaboração'),
 ('Finalizado'),
@@ -246,8 +252,6 @@ INSERT INTO `status_pedido` (`nome`) VALUES
 
 DELIMITER $$
 
--- RN03: impede adicionar item de produto inativo ou item
--- em um pedido que não esteja mais "Em elaboração".
 CREATE TRIGGER `trg_item_pedido_before_insert`
 BEFORE INSERT ON `item_pedido`
 FOR EACH ROW
@@ -272,9 +276,6 @@ BEGIN
     END IF;
 END$$
 
--- RF10, RF13, RN01: impede registrar saída maior que o
--- estoque disponível (checagem antecipada, além da CHECK
--- em produto.estoque).
 CREATE TRIGGER `trg_movimentacao_estoque_before_insert`
 BEFORE INSERT ON `movimentacao_estoque`
 FOR EACH ROW
@@ -315,8 +316,14 @@ DELIMITER ;
 
 DELIMITER $$
 
-CREATE PROCEDURE `sp_finalizar_pedido`(IN p_idpedido INT)
+CREATE PROCEDURE `sp_finalizar_pedido`(
+    IN p_idpedido INT,
+    IN p_idusuario_responsavel INT
+)
 BEGIN
+    DECLARE v_status_pedido INT;
+    DECLARE v_usuario_existe INT DEFAULT 0;
+    DECLARE v_total_itens INT DEFAULT 0;
     DECLARE v_insuficiente INT DEFAULT 0;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
@@ -326,6 +333,50 @@ BEGIN
     END;
 
     START TRANSACTION;
+
+    SELECT `status_idstatus_pedido` INTO v_status_pedido
+    FROM `pedido`
+    WHERE `idpedido` = p_idpedido
+    FOR UPDATE;
+
+    IF v_status_pedido IS NULL THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Pedido não encontrado.';
+    END IF;
+
+    SELECT COUNT(*) INTO v_usuario_existe
+    FROM `usuario`
+    WHERE `idusuario` = p_idusuario_responsavel;
+
+    IF v_usuario_existe = 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Usuário responsável não encontrado.';
+    END IF;
+
+    IF v_status_pedido <> 1 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Só é possível finalizar pedidos com status "Em elaboração".';
+    END IF;
+
+    SELECT COUNT(*) INTO v_total_itens
+    FROM `item_pedido`
+    WHERE `pedido_idpedido` = p_idpedido;
+
+    IF v_total_itens = 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Não é possível finalizar um pedido sem itens.';
+    END IF;
+
+    SELECT p.`idproduto`
+    FROM `item_pedido` ip
+    JOIN `produto` p ON p.`idproduto` = ip.`produto_idproduto`
+    WHERE ip.`pedido_idpedido` = p_idpedido
+    ORDER BY p.`idproduto`
+    FOR UPDATE;
 
     SELECT COUNT(*) INTO v_insuficiente
     FROM `item_pedido` ip
@@ -339,9 +390,14 @@ BEGIN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Não é possível finalizar: um ou mais itens não têm estoque suficiente.';
     ELSE
-        UPDATE `produto` p
-        JOIN `item_pedido` ip ON ip.`produto_idproduto` = p.`idproduto`
-        SET p.`estoque` = p.`estoque` - ip.`quantidade`
+        INSERT INTO `movimentacao_estoque`
+            (`produto_idproduto`, `usuario_idusuario`, `tipo`, `quantidade`)
+        SELECT
+            ip.`produto_idproduto`,
+            p_idusuario_responsavel,
+            'SAIDA',
+            ip.`quantidade`
+        FROM `item_pedido` ip
         WHERE ip.`pedido_idpedido` = p_idpedido;
 
         UPDATE `pedido`
@@ -358,10 +414,67 @@ DELIMITER ;
 
 
 -- =====================================================
+-- PROCEDURE: sp_cancelar_pedido
+-- =====================================================
+
+DELIMITER $$
+
+CREATE PROCEDURE `sp_cancelar_pedido`(
+    IN p_idpedido INT,
+    IN p_idusuario_responsavel INT
+)
+BEGIN
+    DECLARE v_status_atual INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT `status_idstatus_pedido` INTO v_status_atual
+    FROM `pedido`
+    WHERE `idpedido` = p_idpedido
+    FOR UPDATE;
+
+    IF v_status_atual IS NULL THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Pedido não encontrado.';
+    ELSEIF v_status_atual NOT IN (1, 2, 3) THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Transição inválida: só é possível cancelar pedidos Em elaboração, Finalizados ou Em separação.';
+    ELSE
+        IF v_status_atual IN (2, 3) THEN
+            INSERT INTO `movimentacao_estoque`
+                (`produto_idproduto`, `usuario_idusuario`, `tipo`, `quantidade`)
+            SELECT
+                ip.`produto_idproduto`,
+                p_idusuario_responsavel,
+                'ENTRADA',
+                ip.`quantidade`
+            FROM `item_pedido` ip
+            WHERE ip.`pedido_idpedido` = p_idpedido;
+        END IF;
+
+        UPDATE `pedido`
+        SET `status_idstatus_pedido` = 5 -- Cancelado
+        WHERE `idpedido` = p_idpedido;
+
+        COMMIT;
+    END IF;
+END$$
+
+DELIMITER ;
+
+
+-- =====================================================
 -- VIEWS DE APOIO
 -- =====================================================
 
--- RF13: produtos com estoque abaixo do mínimo definido.
 CREATE VIEW `vw_produtos_estoque_baixo` AS
 SELECT
     p.`idproduto`,
@@ -374,7 +487,6 @@ JOIN `categoria` c ON c.`idcategoria` = p.`categoria_idcategoria`
 WHERE p.`estoque` < p.`estoque_minimo`
   AND p.`status` = 1;
 
--- RF25: indicadores básicos para o Administrador.
 CREATE VIEW `vw_indicadores_admin` AS
 SELECT
     (SELECT COUNT(*) FROM `produto`) AS `total_produtos`,
