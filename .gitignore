@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/publish/
+**/.vs/
+**/.idea/
+*.user
+*.suo
+**/appsettings.Development.json
+**/appsettings.Local.json
+**/secrets.json
+.env
+.env.*
+*.log
+*.tmp
